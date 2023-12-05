@@ -1,0 +1,458 @@
+import math
+from collections import Counter
+import random
+import copy
+from itertools import permutations
+from itertools import combinations
+import datetime
+
+scoreOptHelper = {}
+remove_dupe = lambda x: list(set(x))
+
+
+def parse_string_instr(instruction):
+  try:
+    if "#," not in instruction:
+      uniqueCombsFromInstr = (instruction,)
+    elif "#," in instruction:
+      numOfUnique = 1
+      if "##" in instruction:
+        instruction = instruction.split("##")
+        numOfUnique = int(instruction[0])
+        uniqueCombsFromInstr = remove_dupe(combinations(instruction[1].split("#,"),numOfUnique))
+        return uniqueCombsFromInstr
+      uniqueCombsFromInstr = remove_dupe(combinations(instruction.split("#,"),numOfUnique))
+  except:
+    print("SystemExit Raised, Wrong Syntax:", instruction)
+    raise SystemExit("Wrong syntax")
+  return uniqueCombsFromInstr
+
+def list_of_valid_hands(instr, hand=[]): #(I hate recursion, but here we are.) 
+  if len(instr)==0:
+    return [hand]
+  currentInstr = instr[0]
+  instr.remove(currentInstr)
+  hands = []
+  for card in currentInstr:
+    if isinstance(card,tuple):
+      hands+=list_of_valid_hands(copy.deepcopy(instr),hand=hand+list(card))
+    else:
+      hands+=list_of_valid_hands(copy.deepcopy(instr),hand=hand+[card])
+  return hands
+
+def parse_hand_instr(handInstr):
+  if not isinstance(handInstr["containsAtLeast"], tuple):
+    raise Warning(f"{handInstr} is wrong. \nCheck if your 'containsAtLeast' are tuples. \
+      A tuple with one item must end with a comma. Ex. ('tupleMember',)")
+  qualifyingHands = [parse_string_instr(instr) for instr in handInstr["containsAtLeast"]]
+  qualifyingHands = list_of_valid_hands(qualifyingHands)
+  holder = []
+  for hand in qualifyingHands:
+    temp = copy.deepcopy(hand)
+    hand = copy.deepcopy(handInstr)
+    hand["containsAtLeast"]=dict(Counter(temp))
+    #print(hand["containsAtLeast"])
+    holder+=[hand]
+  return holder
+
+def hand_contains(hand, contains):
+  if isinstance(hand, tuple) or isinstance(hand, list):
+    hand = Counter(hand)
+  if isinstance(contains, tuple) or isinstance(contains, list):
+    contains = Counter(contains)
+  for key in contains:
+    if key not in hand:#apparently "key in hand==False" does not work here... for some reason. i spent half an hour trying to debug it and i still dunno why. 
+      return False      # future me here. you're an idiot.
+    if contains[str(key)] > hand[str(key)]:
+      return False
+  return True
+
+
+def translate_filter_sort_evalData(evalData):
+  '''
+  does NOT change input(s)
+  '''
+  #check if evalData has already been formatted
+  if isinstance(evalData[0]["containsAtLeast"], dict):
+    return evalData
+  
+  evalDataClone = copy.deepcopy(evalData)
+  holder = []
+  for hand in evalDataClone:
+    holder+=parse_hand_instr(hand)
+  evalDataClone = holder
+  evalDataClone.sort(key = lambda x:x["score"], reverse=True)
+
+  #remove hands if it is a superset of a hand with an equal or higher score
+  for hand in evalDataClone:
+    for toRemove in evalDataClone:
+      if hand is not toRemove and hand["score"]>=toRemove["score"] and hand_contains(toRemove["containsAtLeast"], hand["containsAtLeast"]):
+        #print(hand, toRemove)
+        evalDataClone.remove(toRemove)
+    
+  evalDataClone.sort(key = lambda x:x["score"], reverse=True)
+  return evalDataClone
+
+def format_evalData(evalData):
+  return translate_filter_sort_evalData(evalData)
+
+def deck_constr(deckInstr):
+  '''
+  does NOT change input(s)
+  '''
+  deck = []
+  for cardName, numOfCard in deckInstr.items():
+      try:
+          deck+= [cardName for i in range(numOfCard)]
+      except:
+          pass
+  return deck
+
+def possible_changes_to_deck(deckInstr, alreadyTried=[]):
+  '''
+  does NOT change input(s)
+  '''
+  possibleChanges = []
+  cardTypes = list(deckInstr.keys()) 
+  cardTypes.remove("extraInfo")
+  perms = permutations(cardTypes,2)
+  
+  for permutation in perms:
+      addTo= deckInstr[permutation[0]]+1
+      subtractFrom = deckInstr[permutation[1]]-1
+      if addTo <= deckInstr["extraInfo"]["maxOf"][permutation[0]]\
+      and subtractFrom >= deckInstr["extraInfo"]["minOf"][permutation[1]]\
+      and subtractFrom >= 0:
+          deck = copy.deepcopy(deckInstr)
+          deck[permutation[0]]+=1
+          deck[permutation[1]]-=1
+          if deck_ID(deck) not in alreadyTried:
+              possibleChanges += [deck]
+  return possibleChanges
+    
+
+def eval_hand(hand, evalData): # EvalData MUST be formatted. Outputs the best score possible from evalData, else returns 0.
+    for criteria in evalData:
+        if hand_contains(hand, criteria["containsAtLeast"]):
+            return criteria["score"]
+    return 0
+
+def eval_deck_RANDOM(deckInstr,evalData, trials=5000):
+  '''
+  use eval_deck instead of this
+  '''
+  deck = deck_constr(deckInstr)
+  deckScore = 0
+  something = 0
+  for i in range(trials):
+      random.shuffle(deck)
+      hand = deck[0:handSize]
+      handScore = eval_hand(hand, evalData)
+      deckScore += handScore
+      if handScore>0:
+        something+=1
+  return {"totalScore":deckScore, "trials":trials, "avgScore":deckScore/trials, "percentThatScored":something/trials}
+
+def add_defaults_to_deckInstr(deckInstr, defaultMaxOf=3, defaultMinOf=0): #changes original
+  if "defaultMaxOf" in deckInstr["extraInfo"]:
+    defaultMaxOf=deckInstr["extraInfo"]["defaultMaxOf"]
+  if "defaultMinOf" in deckInstr["extraInfo"]:
+    defaultMaxOf=deckInstr["extraInfo"]["defaultMinOf"]
+    
+  for key, item in deckInstr.items():
+    if key != "extraInfo" and key not in deckInstr["extraInfo"]["maxOf"]:
+      if item <= defaultMaxOf:
+        deckInstr["extraInfo"]["maxOf"][key] = defaultMaxOf
+      else:
+        deckInstr["extraInfo"]["maxOf"][key] = item
+    if key != "extraInfo" and key not in deckInstr["extraInfo"]["minOf"]:
+      deckInstr["extraInfo"]["minOf"][key] = defaultMinOf
+  deckInstr["extraInfo"]["deckSize"]=len(deck_constr(deckInstr))
+
+def format_deckInstr(deckInstr, defaultMaxOf = 3, defaultMinOf = 0):
+  add_defaults_to_deckInstr(deckInstr, defaultMaxOf = defaultMaxOf, defaultMinOf = defaultMinOf)
+
+def find_combs_of_hand(hand, deckInstr):
+  if hand==None:
+    return 0
+  holder = 1
+  for card, numOfCard in hand.items():
+    holder = holder*math.comb(deckInstr[card],numOfCard)
+  return holder
+
+deck_ID = lambda deckInstr: str(sorted([str(key)+str(value) for key, value in deckInstr.items() if isinstance(value,int)]))
+
+
+
+
+def eval_deck(deckInstr, evalDataArray, handSize=5, evalDataMethod = lambda scores:sum(scores)):#this is the first time i learned about docstrings. Cool, init.
+  """
+  evaluates a deck's score based on an array of evaluation methods
+
+  Also adds "score" to deckInstr["extraInfo"](aka it changes the input).
+
+  evalDataArray is an array of evaluation criteria, evalDataMethod determines how they interact.
+
+  TODO: this is ridiculously unoptimized. This function can benefit from multiprocessing.
+  """
+  global scoreOptHelper #this variable helps to hugely speed up the code when this function is run more than once
+  if "handSize" in deckInstr["extraInfo"]:
+    handSize=deckInstr["extraInfo"]["handSize"]
+
+  #formatting inputs
+  evalDataArray = [format_evalData(evalData) for evalData in evalDataArray]
+  format_deckInstr(deckInstr)
+
+  #create a list of every possible hand
+  deck = deck_constr(deckInstr)
+  #possibleHands = [dict(Counter(i)) for i in combs_no_repeats(deck, handSize)]
+  possibleHands = [dict(Counter(i)) for i in set(combinations(deck, handSize))]
+  
+  #go through every possible hand, find its score, and find the probability of drawing it
+  totalScore = 0
+  scoreDistribution = {}
+  deckCombs = math.comb(deckInstr["extraInfo"]["deckSize"],handSize)
+  for hand in possibleHands:
+    #find the probability of drawing the possibleHand
+    probOfHand = find_combs_of_hand(hand, deckInstr)/deckCombs
+
+    #find score of hand
+    score = 0
+    if str(hand) in scoreOptHelper:     #scoreOptHelper is basically a cache of hands and thier scores,
+      score = scoreOptHelper[str(hand)] #so we don't need to find the score again if we've seen the hand b4
+    else: #find the score by looking through evalDataArray
+      scores = []
+      for evalData in evalDataArray:
+        for handComp in evalData:
+          if hand_contains(hand, handComp["containsAtLeast"]):
+            scores += [handComp["score"]]
+            break
+      score = evalDataMethod(scores) #the default evalDataMethod simply sums the scores
+      scoreOptHelper[str(hand)] = score
+
+    #record score of hand
+    if score in scoreDistribution:
+      scoreDistribution[score] += probOfHand
+    else:
+      scoreDistribution[score] = probOfHand
+    totalScore += score*probOfHand
+  totalScore = round(totalScore,9)
+
+  #record scores into deckInstr(modifying the input)
+  deckInstr["extraInfo"]["score"]= totalScore
+  deckInstr["extraInfo"]["scoreDistribution"]= scoreDistribution
+  return {"score":totalScore, "scoreDistribution":scoreDistribution}
+
+def optimize(deckInstr, evalDataArray, handSize=5, evalDataMethod = lambda scores:sum(scores)):
+  '''
+  uses greedy optimization to find a local maxima
+  returns deck instructions of the optimized deck
+  '''
+  startingTime = datetime.datetime.now()
+
+  #some formatting
+  add_defaults_to_deckInstr(deckInstr)
+  evalDataArray = [translate_filter_sort_evalData(evalData) for evalData in evalDataArray]
+  decisionSpace = [{"deckInstr":copy.deepcopy(deckInstr),"totalScore":0,"trials":0}]
+  
+
+  bestDeck = deckInstr
+  bestScore = 0
+  triedLists = set()
+  print("Optimization Started. This may take some time. We'll give you updates to keep your morale up.")
+  while True:
+    bestDeckComp = bestDeck
+    for deck in possible_changes_to_deck(bestDeck, alreadyTried = triedLists):
+      eval_deck(deck, evalDataArray, handSize, evalDataMethod = evalDataMethod)
+      if deck["extraInfo"]["score"]>bestScore:
+        bestDeck = deck
+        bestScore = deck["extraInfo"]["score"]
+      triedLists.add(deck_ID(deck))
+    print(f"Time Elasped So Far: {datetime.datetime.now()-startingTime}")
+    print(f"Decklists Analyzed: {len(triedLists)}")
+    print("Still Optimzing...")
+    if bestDeckComp == bestDeck:
+      break
+  print("Finished")
+  print(f"Best Version: {bestDeck}")
+  print(f"Total Time Elasped: {datetime.datetime.now()-startingTime}")
+  return bestDeck
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+testData ={
+  "basic":{
+    "deckInstr":{
+      "a":30,
+      "b":10,
+      "extraInfo":{
+        "maxOf":{
+        },
+        "minOf":{
+        },
+        "defaultMaxOf":100,
+        "handSize":8
+        }
+    },
+    "evalDataArray":[[
+    {"score":1, "containsAtLeast":("a","b")}
+    ]]
+  },
+  "advanced":{
+    "deckInstr":{
+            "extender":15,
+            "starter":12,
+            "ht":7,
+            "brick":6,
+            "extraInfo":{
+                "maxOf":{
+                    },
+                "minOf":{
+                    "brick":5
+                    },
+                "defaultMaxOf":100
+                }
+            },
+    "evalDataArray":[[
+    {"score":3, "containsAtLeast":("ht", "starter", "extender")},
+    {"score":5, "containsAtLeast":("ht", "starter", "2##starter#,extender#,extender")},
+    {"score":2, "containsAtLeast":("starter", "extender")},
+    {"score":1, "containsAtLeast":("starter",)}
+    ]]
+  },
+  "2021 Dragonmaids":{ #4.646925265
+    "deckInstr":{
+                "chamber":3,
+                "parlor":3,
+                "BMD":3,
+                "hospi":2,
+                "nocto":2,
+                "WLG":3,
+                "reborn":1,
+                "change":2,
+                "tidying":3, 
+                "tempest":1,
+                "reasoning":1,
+                "arma gram":1,
+                "glow":1,
+                "dragon ravine":1,
+                "gold sarc":1,
+                "big pink":1,
+                "big green":1,
+                "crow":3,
+                "nib":2,
+                "belle":2,
+                "ash":1,
+                "nurse":1,
+                "big black":1,
+                "kitchen":0,
+                "extraInfo":{
+                    "maxOf":{
+                      "reborn":1,
+                      "big black":1,
+                      "gold sarc":1,
+                      "tempest":1
+                        },
+                    "minOf":{
+                      "nurse":1,
+                      "tidying":3,
+                      "arma gram":1,
+                      "glow":1,
+                      "change":2,
+                      "tempest":1,
+                      "hospi":2,
+                      "dragon ravine":1,
+                      "big pink":1,
+                      "big green":1,
+                      "big black":1
+                        }
+                    }
+                },
+    "evalDataArray":[[
+        {"score":7.5,
+         "containsAtLeast":("chamber#,parlor#,BMD#,kitchen", "4##hospi#,reborn#,WLG#,nocto#,tidying#,tidying#,reasoning#,change"),
+         "reasoning":"Ends on spheres+sheou+IP, plays under stuff"},
+        {"score":7,
+         "containsAtLeast":("chamber#,parlor#,BMD#,kitchen", "3##hospi#,reborn#,WLG#,nocto#,tidying#,tidying#,reasoning#,change"),
+         "reasoning":"Ends on spheres+sheou+IP, plays under stuff"},
+        {"score":6,
+         "containsAtLeast":("chamber#,parlor#,BMD#,kitchen", "2##hospi#,reborn#,WLG#,nocto#,tidying"),
+         "reasoning":"Ends on spheres+sheou+IP, plays under nib"},
+        {"score":6,
+         "containsAtLeast":("chamber#,parlor#,kitchen", "2##hospi#,reborn#,WLG#,nocto#,tidying#,change"),
+         "reasoning":"Ends on spheres+sheou+IP, plays under nib"},
+        {"score":4.5,
+         "containsAtLeast":("chamber#,kitchen", "WLG"),
+         "reasoning":"Ends on Sheou+IP, makes spheres/sheou under any HT"},
+        {"score":4.5,
+         "containsAtLeast":("chamber#,parlor#,kitchen", "WLG"),
+         "reasoning":"Ends on Sheou+IP, plays under nib... more or less"},
+        {"score":4,
+         "containsAtLeast":("chamber#,parlor#,BMD#,kitchen", "hospi#,reborn"),
+         "reasoning":"Ends on Sheou+IP, dies to everything"},
+        {"score":4,
+         "containsAtLeast":("chamber#,parlor", "hospi#,reborn#,nocto"),
+         "reasoning":""},
+        {"score":4,
+         "containsAtLeast":("chamber", "tidying"),
+         "reasoning":""},
+        {"score":3.5,
+         "containsAtLeast":("gold sarc", "hospi#,reborn#,WLG#,nocto"),
+         "reasoning":"Ends on spheres+spheres+IP or spheres+apo(3), dies to everything"},
+        {"score":2,
+         "containsAtLeast":("chamber#,parlor#,BMD",),
+         "reasoning":"Ends on spheres"},
+        {"score":2,
+         "containsAtLeast":("chamber#,parlor#,BMD",),
+         "reasoning":"Ends on spheres"}
+    ],[
+        {"score":3,
+         "containsAtLeast":("3##ash#,nib#,belle",),
+         "reasoning":""},
+        {"score":2,
+         "containsAtLeast":("2##ash#,nib#,belle",),
+         "reasoning":""},
+        {"score":1,
+         "containsAtLeast":("ash#,nib#,belle",),
+         "reasoning":""}
+    ],[
+        {"score":2.4,
+         "containsAtLeast":("3##crow#,crow#,crow",),
+         "reasoning":""},
+        {"score":1.6,
+         "containsAtLeast":("2##crow#,crow",),
+         "reasoning":""},
+        {"score":0.8,
+         "containsAtLeast":("crow",),
+         "reasoning":""}
+    ]
+    ]
+  }
+}
+
+
+if __name__ in "__main__" :
+    pass
+
+
